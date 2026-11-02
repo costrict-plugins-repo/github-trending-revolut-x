@@ -1,0 +1,599 @@
+import type { KeyObject } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { makeRequest, type RequestOptions } from "./http/index.js";
+import {
+  AuthNotConfiguredError,
+  InvalidCredentialsError,
+  InsecureKeyPermissionsError,
+  NetworkError,
+  ValidationError,
+  type CredentialsIssue,
+} from "./http/errors.js";
+import { loadPrivateKey } from "./auth/keypair.js";
+import { inspectCredentials } from "./auth/index.js";
+import { normalizeBaseUrl } from "./config/base-url.js";
+import { DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT_MS } from "./config/settings.js";
+import { MAKER_FEE_RATE, TAKER_FEE_RATE } from "./config/fees.js";
+import { ORDER_BOOK_DEFAULT_DEPTH } from "./pagination/constants.js";
+import { type LogCallback, Logger } from "./logging/logger.js";
+import {
+  placementReplySchema,
+  placeOrderSchema,
+  replaceOrderSchema,
+} from "./validation/schemas.js";
+import type { AccountBalance } from "./types/account.js";
+import type { CurrencyMap, CurrencyPairMap } from "./types/config.js";
+import {
+  ActiveOrdersOptions,
+  HistoricalOrdersOptions,
+  Order,
+  OrderDetails,
+  OrderPlacementResult,
+  PlaceOrderParams,
+  ReplaceOrderParams,
+  ReplaceTriggerConfig,
+} from "./types/orders.js";
+import type { PublicTrade, Trade, TradesOptions } from "./types/trades.js";
+import type {
+  Transaction,
+  TransactionDetails,
+  TransactionsOptions,
+} from "./types/transactions.js";
+import {
+  mapPublicTrade,
+  mapTrade,
+  type WirePublicTrade,
+  type WireTrade,
+} from "./mappers/trades.js";
+import {
+  mapOrderBookLevel,
+  type WireOrderBookLevel,
+} from "./mappers/market.js";
+import type {
+  Candle,
+  CandlesOptions,
+  OrderBook,
+  OrderBookLevel,
+  OrderBookOptions,
+  Ticker,
+  TickersOptions,
+} from "./types/market.js";
+import type {
+  DataArrayResponse,
+  DataResponse,
+  PaginatedResponse,
+} from "./types/common.js";
+
+const DEFAULT_BASE_URL = "https://revx.revolut.com";
+
+const RESOLUTION_MAP: Record<string, number> = {
+  "1m": 1,
+  "5m": 5,
+  "15m": 15,
+  "30m": 30,
+  "1h": 60,
+  "4h": 240,
+  "1d": 1440,
+  "2d": 2880,
+  "4d": 5760,
+  "1w": 10080,
+  "2w": 20160,
+  "4w": 40320,
+};
+
+export interface RevolutXClientOptions {
+  apiKey?: string;
+  privateKey?: KeyObject;
+  privateKeyPath?: string;
+  baseUrl?: string;
+  timeout?: number;
+  maxRetries?: number;
+  autoLoadCredentials?: boolean;
+  generatedBy?: string;
+  logger?: LogCallback;
+  enforceKeyPermissions?: boolean;
+}
+
+function buildReplaceTriggerConfig(
+  trigger: ReplaceTriggerConfig,
+): Record<string, unknown> {
+  const config: Record<string, unknown> = {
+    trigger_price: trigger.triggerPrice,
+  };
+  if (trigger.limitPrice) config.limit_price = trigger.limitPrice;
+  return config;
+}
+
+export class RevolutXClient {
+  private readonly requestOptions: RequestOptions;
+  private readonly logger: Logger;
+  readonly credentialsIssue: CredentialsIssue | undefined;
+
+  constructor(options: RevolutXClientOptions = {}) {
+    let apiKey = options.apiKey;
+    let privateKey = options.privateKey;
+    let privateKeyPath = options.privateKeyPath;
+
+    if (options.privateKeyPath && !privateKey) {
+      privateKey = loadPrivateKey(options.privateKeyPath);
+    }
+
+    let credentialsIssue: CredentialsIssue | undefined;
+    if (!apiKey && !privateKey && options.autoLoadCredentials !== false) {
+      const check = inspectCredentials();
+      if (check.status === "ready") {
+        apiKey = check.credentials.apiKey;
+        privateKey = check.credentials.privateKey;
+        privateKeyPath = check.credentials.privateKeyPath;
+      } else if (check.status === "invalid") {
+        credentialsIssue = check.issue;
+      }
+    }
+    this.credentialsIssue = credentialsIssue;
+
+    if (options.enforceKeyPermissions && privateKey && !privateKeyPath) {
+      throw new InsecureKeyPermissionsError(
+        "enforceKeyPermissions requires a private key loaded from a file path",
+      );
+    }
+
+    this.logger = new Logger(options.logger);
+
+    this.requestOptions = {
+      baseUrl: options.baseUrl
+        ? normalizeBaseUrl(options.baseUrl, "The baseUrl option")
+        : normalizeBaseUrl(
+            process.env.REVOLUTX_API_URL?.trim() || DEFAULT_BASE_URL,
+            "The API URL (REVOLUTX_API_URL)",
+          ),
+      apiKey,
+      privateKey,
+      privateKeyPath,
+      enforceKeyPermissions: options.enforceKeyPermissions === true,
+      timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
+      maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
+      logger: this.logger,
+      generatedBy: options.generatedBy,
+    };
+  }
+
+  get isAuthenticated(): boolean {
+    return Boolean(
+      this.requestOptions.apiKey && this.requestOptions.privateKey,
+    );
+  }
+
+  assertAuthenticated(): void {
+    if (this.isAuthenticated) return;
+    if (this.credentialsIssue) {
+      throw new InvalidCredentialsError(this.credentialsIssue);
+    }
+    throw new AuthNotConfiguredError();
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    params?: Record<string, unknown>,
+    body?: Record<string, unknown>,
+  ): Promise<T> {
+    return (await makeRequest(
+      this.requestOptions,
+      method,
+      path,
+      params,
+      body,
+    )) as T;
+  }
+
+  async getBalances(): Promise<AccountBalance[]> {
+    this.assertAuthenticated();
+    return this.request<AccountBalance[]>("GET", "/balances");
+  }
+
+  async getCurrencies(): Promise<CurrencyMap> {
+    this.assertAuthenticated();
+    return this.request<CurrencyMap>("GET", "/configuration/currencies");
+  }
+
+  async getCurrencyPairs(): Promise<CurrencyPairMap> {
+    this.assertAuthenticated();
+    return this.request<CurrencyPairMap>("GET", "/configuration/pairs");
+  }
+
+  getMakerFee(): string {
+    return MAKER_FEE_RATE;
+  }
+
+  getTakerFee(): string {
+    return TAKER_FEE_RATE;
+  }
+
+  async getTickers(
+    opts?: TickersOptions,
+  ): Promise<{ data: Ticker[]; metadata: { timestamp: number } }> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.symbols?.length) params.symbols = opts.symbols.join(",");
+    return this.request<{ data: Ticker[]; metadata: { timestamp: number } }>(
+      "GET",
+      "/tickers",
+      params,
+    );
+  }
+
+  async getCandles(
+    symbol: string,
+    opts?: CandlesOptions,
+  ): Promise<DataArrayResponse<Candle>> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.interval !== undefined) {
+      params.interval =
+        typeof opts.interval === "number"
+          ? opts.interval
+          : (RESOLUTION_MAP[String(opts.interval)] ?? opts.interval);
+    }
+    if (opts?.startDate !== undefined) params.since = opts.startDate;
+    if (opts?.endDate !== undefined) params.until = opts.endDate;
+    return this.request<DataArrayResponse<Candle>>(
+      "GET",
+      `/candles/${symbol}`,
+      params,
+    );
+  }
+
+  async getOrderBook(
+    symbol: string,
+    opts?: OrderBookOptions,
+  ): Promise<{
+    data: OrderBook<OrderBookLevel>;
+    metadata: { timestamp: number };
+  }> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    params.limit = opts?.limit ?? ORDER_BOOK_DEFAULT_DEPTH;
+    const raw = await this.request<{
+      data: OrderBook<WireOrderBookLevel>;
+      metadata: { timestamp: number };
+    }>("GET", `/order-book/${symbol}`, params);
+    return {
+      data: {
+        asks: raw.data.asks.map(mapOrderBookLevel),
+        bids: raw.data.bids.map(mapOrderBookLevel),
+      },
+      metadata: raw.metadata,
+    };
+  }
+
+  async placeOrder(
+    params: PlaceOrderParams,
+  ): Promise<DataResponse<OrderPlacementResult>> {
+    this.assertAuthenticated();
+
+    const validation = placeOrderSchema.safeParse(params);
+    if (!validation.success) {
+      throw new ValidationError(
+        "Invalid order parameters",
+        validation.error.errors,
+      );
+    }
+    const body: Record<string, unknown> = {
+      client_order_id: params.clientOrderId ?? randomUUID(),
+      symbol: params.symbol,
+      side: params.side,
+    };
+
+    if (params.limit) {
+      const limitConfig: Record<string, unknown> = {
+        price: params.limit.price,
+      };
+      if (params.limit.baseSize) limitConfig.base_size = params.limit.baseSize;
+      if (params.limit.quoteSize)
+        limitConfig.quote_size = params.limit.quoteSize;
+      if (params.limit.timeInForce)
+        limitConfig.time_in_force = params.limit.timeInForce;
+      if (params.limit.executionInstructions) {
+        limitConfig.execution_instructions = params.limit.executionInstructions;
+      }
+      body.order_configuration = { limit: limitConfig };
+    } else if (params.market) {
+      const marketConfig: Record<string, unknown> = {};
+      if (params.market.baseSize)
+        marketConfig.base_size = params.market.baseSize;
+      if (params.market.quoteSize)
+        marketConfig.quote_size = params.market.quoteSize;
+      body.order_configuration = { market: marketConfig };
+    } else if (params.conditional) {
+      const conditionalConfig: Record<string, unknown> = {
+        trigger_price: params.conditional.triggerPrice,
+      };
+      if (params.conditional.baseSize)
+        conditionalConfig.base_size = params.conditional.baseSize;
+      if (params.conditional.quoteSize)
+        conditionalConfig.quote_size = params.conditional.quoteSize;
+      if (params.conditional.limitPrice)
+        conditionalConfig.limit_price = params.conditional.limitPrice;
+      body.order_configuration = { conditional: conditionalConfig };
+    } else if (params.tpsl) {
+      const tpslConfig: Record<string, unknown> = {
+        base_size: params.tpsl.baseSize,
+      };
+      if (params.tpsl.takeProfit) {
+        const takeProfitConfig: Record<string, unknown> = {
+          trigger_price: params.tpsl.takeProfit.triggerPrice,
+        };
+        if (params.tpsl.takeProfit.limitPrice)
+          takeProfitConfig.limit_price = params.tpsl.takeProfit.limitPrice;
+        tpslConfig.take_profit = takeProfitConfig;
+      }
+      if (params.tpsl.stopLoss) {
+        const stopLossConfig: Record<string, unknown> = {
+          trigger_price: params.tpsl.stopLoss.triggerPrice,
+        };
+        if (params.tpsl.stopLoss.limitPrice)
+          stopLossConfig.limit_price = params.tpsl.stopLoss.limitPrice;
+        tpslConfig.stop_loss = stopLossConfig;
+      }
+      body.order_configuration = { tpsl: tpslConfig };
+    }
+
+    return this.sendPlacement("POST", "/orders", body);
+  }
+
+  async getActiveOrders(
+    opts?: ActiveOrdersOptions,
+  ): Promise<PaginatedResponse<Order>> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.symbols?.length) params.symbols = opts.symbols.join(",");
+    if (opts?.orderStates?.length)
+      params.order_states = opts.orderStates.join(",");
+    if (opts?.orderTypes?.length)
+      params.order_types = opts.orderTypes.join(",");
+    if (opts?.side) params.side = opts.side;
+    if (opts?.cursor) params.cursor = opts.cursor;
+    if (opts?.limit !== undefined) params.limit = opts.limit;
+    return this.request<PaginatedResponse<Order>>(
+      "GET",
+      "/orders/active",
+      params,
+    );
+  }
+
+  async getHistoricalOrders(
+    opts?: HistoricalOrdersOptions,
+  ): Promise<PaginatedResponse<Order>> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.symbols?.length) params.symbols = opts.symbols.join(",");
+
+    let requestedStates: string[] = [];
+    if (opts?.orderStates?.length) {
+      requestedStates = [...opts.orderStates] as string[];
+      let queryStates = [...requestedStates];
+
+      const wantsPartiallyFilled = queryStates.includes("partially_filled");
+      const wantsCancelled =
+        queryStates.includes("canceled") || queryStates.includes("cancelled");
+
+      if (wantsPartiallyFilled) {
+        queryStates = queryStates.filter((s) => s !== "partially_filled");
+        if (!wantsCancelled) {
+          queryStates.push("cancelled");
+        }
+      }
+
+      if (queryStates.length > 0) {
+        params.order_states = queryStates.join(",");
+      }
+    }
+
+    if (opts?.orderTypes?.length)
+      params.order_types = opts.orderTypes.join(",");
+    if (opts?.startDate !== undefined) params.start_date = opts.startDate;
+    if (opts?.endDate !== undefined) params.end_date = opts.endDate;
+    if (opts?.cursor) params.cursor = opts.cursor;
+    if (opts?.limit !== undefined) params.limit = opts.limit;
+
+    const response = await this.request<PaginatedResponse<Order>>(
+      "GET",
+      "/orders/historical",
+      params,
+    );
+
+    const processedData = response.data.map((order) => {
+      const statusStr = String(order.status);
+      const isCancelled = statusStr === "canceled" || statusStr === "cancelled";
+      const filledQty = Number(order.filled_quantity || 0);
+
+      if (isCancelled && filledQty > 0) {
+        return { ...order, status: "partially_filled" as never };
+      }
+      return order;
+    });
+
+    if (requestedStates.length > 0) {
+      response.data = processedData.filter((order) =>
+        requestedStates.includes(String(order.status)),
+      );
+    } else {
+      response.data = processedData;
+    }
+
+    return response;
+  }
+
+  async getOrder(venueOrderId: string): Promise<DataResponse<OrderDetails>> {
+    this.assertAuthenticated();
+    const response = await this.request<DataResponse<OrderDetails>>(
+      "GET",
+      `/orders/${venueOrderId}`,
+    );
+
+    const order = response.data;
+    const statusStr = String(order.status);
+    const isCancelled = statusStr === "canceled" || statusStr === "cancelled";
+    const filledQty = Number(order.filled_quantity || 0);
+
+    if (isCancelled && filledQty > 0) {
+      response.data = { ...order, status: "partially_filled" as never };
+    }
+
+    return response;
+  }
+
+  async replaceOrder(
+    venueOrderId: string,
+    params: ReplaceOrderParams,
+  ): Promise<DataResponse<OrderPlacementResult>> {
+    this.assertAuthenticated();
+
+    const validation = replaceOrderSchema.safeParse(params);
+    if (!validation.success) {
+      throw new ValidationError(
+        "Invalid replace order parameters",
+        validation.error.errors,
+      );
+    }
+
+    const body: Record<string, unknown> = {
+      client_order_id: params.clientOrderId,
+    };
+    if (params.price !== undefined) body.price = params.price;
+    if (params.baseSize !== undefined) body.base_size = params.baseSize;
+    if (params.quoteSize !== undefined) body.quote_size = params.quoteSize;
+    if (params.timeInForce !== undefined)
+      body.time_in_force = params.timeInForce;
+    if (params.executionInstructions !== undefined) {
+      body.execution_instructions = params.executionInstructions;
+    }
+    if (params.conditional !== undefined) {
+      body.conditional =
+        params.conditional === null
+          ? null
+          : buildReplaceTriggerConfig(params.conditional);
+    }
+    if (params.takeProfit !== undefined) {
+      body.take_profit =
+        params.takeProfit === null
+          ? null
+          : buildReplaceTriggerConfig(params.takeProfit);
+    }
+    if (params.stopLoss !== undefined) {
+      body.stop_loss =
+        params.stopLoss === null
+          ? null
+          : buildReplaceTriggerConfig(params.stopLoss);
+    }
+
+    return this.sendPlacement("PUT", `/orders/${venueOrderId}`, body);
+  }
+
+  private async sendPlacement(
+    method: "POST" | "PUT",
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<DataResponse<OrderPlacementResult>> {
+    const reply = await this.request<unknown>(method, path, undefined, body);
+    const checked = placementReplySchema.safeParse(reply);
+    if (!checked.success) {
+      throw new NetworkError(
+        "The exchange's reply didn't include the order's details.",
+        { cause: checked.error, mayHaveReachedServer: true },
+      );
+    }
+    return reply as DataResponse<OrderPlacementResult>;
+  }
+
+  async cancelOrder(venueOrderId: string): Promise<void> {
+    this.assertAuthenticated();
+    await this.request("DELETE", `/orders/${venueOrderId}`);
+  }
+
+  async cancelAllOrders(): Promise<void> {
+    this.assertAuthenticated();
+    await this.request("DELETE", "/orders");
+  }
+
+  async getOrderFills(venueOrderId: string): Promise<DataArrayResponse<Trade>> {
+    this.assertAuthenticated();
+    const raw = await this.request<DataArrayResponse<WireTrade>>(
+      "GET",
+      `/orders/fills/${venueOrderId}`,
+    );
+    return {
+      ...raw,
+      data: raw.data.map(mapTrade),
+    };
+  }
+
+  async getAllTrades(
+    symbol: string,
+    opts?: TradesOptions,
+  ): Promise<PaginatedResponse<PublicTrade>> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.startDate !== undefined) params.start_date = opts.startDate;
+    if (opts?.endDate !== undefined) params.end_date = opts.endDate;
+    if (opts?.cursor) params.cursor = opts.cursor;
+    if (opts?.limit !== undefined) params.limit = opts.limit;
+    const raw = await this.request<PaginatedResponse<WirePublicTrade>>(
+      "GET",
+      `/trades/all/${symbol}`,
+      params,
+    );
+    return {
+      ...raw,
+      data: raw.data.map(mapPublicTrade),
+    };
+  }
+
+  async getPrivateTrades(
+    symbol: string,
+    opts?: TradesOptions,
+  ): Promise<PaginatedResponse<Trade>> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.startDate !== undefined) params.start_date = opts.startDate;
+    if (opts?.endDate !== undefined) params.end_date = opts.endDate;
+    if (opts?.cursor) params.cursor = opts.cursor;
+    if (opts?.limit !== undefined) params.limit = opts.limit;
+    const raw = await this.request<PaginatedResponse<WireTrade>>(
+      "GET",
+      `/trades/private/${symbol}`,
+      params,
+    );
+    return {
+      ...raw,
+      data: raw.data.map(mapTrade),
+    };
+  }
+
+  async getTransactions(
+    opts?: TransactionsOptions,
+  ): Promise<PaginatedResponse<Transaction>> {
+    this.assertAuthenticated();
+    const params: Record<string, unknown> = {};
+    if (opts?.startDate !== undefined) params.start_date = opts.startDate;
+    if (opts?.endDate !== undefined) params.end_date = opts.endDate;
+    if (opts?.types?.length) params.types = opts.types.join(",");
+    if (opts?.statuses?.length) params.statuses = opts.statuses.join(",");
+    if (opts?.currencies?.length) params.currencies = opts.currencies.join(",");
+    if (opts?.cursor) params.cursor = opts.cursor;
+    if (opts?.limit !== undefined) params.limit = opts.limit;
+    return this.request<PaginatedResponse<Transaction>>(
+      "GET",
+      "/transactions",
+      params,
+    );
+  }
+
+  async getTransaction(transactionId: string): Promise<TransactionDetails> {
+    this.assertAuthenticated();
+    return this.request<TransactionDetails>(
+      "GET",
+      `/transactions/${transactionId}`,
+    );
+  }
+}

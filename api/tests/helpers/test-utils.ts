@@ -1,0 +1,192 @@
+import { createPrivateKey, generateKeyPairSync } from "node:crypto";
+import { RevolutXClient } from "../../src/client.js";
+
+export const BASE_URL = "https://revx.revolut.com";
+
+interface TestClientOptions {
+  maxRetries?: number;
+  timeout?: number;
+  authenticated?: boolean;
+  generatedBy?: string;
+}
+
+export function createTestClient(
+  options: TestClientOptions = {},
+): RevolutXClient {
+  const {
+    authenticated = true,
+    maxRetries = 0,
+    timeout = 30_000,
+    generatedBy,
+  } = options;
+
+  if (!authenticated) {
+    return new RevolutXClient({
+      baseUrl: BASE_URL,
+      maxRetries,
+      timeout,
+      autoLoadCredentials: false,
+      generatedBy,
+    });
+  }
+
+  const { privateKey } = generateKeyPairSync("ed25519", {
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+
+  return new RevolutXClient({
+    apiKey: "test-api-key",
+    privateKey: createPrivateKey(privateKey),
+    baseUrl: BASE_URL,
+    maxRetries,
+    timeout,
+    autoLoadCredentials: false,
+    generatedBy,
+  });
+}
+
+export const mockBalance = {
+  currency: "BTC",
+  available: "1.5",
+  reserved: "0.1",
+  total: "1.6",
+};
+
+export const mockCurrency = {
+  symbol: "BTC",
+  name: "Bitcoin",
+  scale: 8,
+  asset_type: "crypto",
+  status: "active",
+};
+
+export const mockCurrencyPair = {
+  base: "BTC",
+  quote: "USD",
+  base_step: "0.0000001",
+  quote_step: "0.01",
+  min_order_size: "0.0000001",
+  max_order_size: "1000",
+  min_order_size_quote: "0.01",
+  status: "active",
+};
+
+export const mockTicker = {
+  symbol: "BTC/USD",
+  bid: "95000",
+  ask: "95100",
+  mid: "95050",
+  index_price: "95040",
+  last_price: "95050",
+  low_24h: "94000",
+  high_24h: "96000",
+  price_change_24h: "250",
+  volume_24h: "123.45000000",
+  quote_volume_24h: "11733527.25000000",
+};
+
+export const mockCandle = {
+  start: 1700000000000,
+  open: "92000",
+  high: "93000",
+  low: "91000",
+  close: "92500",
+  volume: "1.5",
+};
+
+export const mockOrder = {
+  id: "order-123",
+  client_order_id: "client-123",
+  symbol: "BTC/USD",
+  side: "buy",
+  type: "limit",
+  quantity: "0.1",
+  filled_quantity: "0",
+  leaves_quantity: "0.1",
+  price: "95000",
+  status: "new",
+  time_in_force: "gtc",
+  execution_instructions: ["allow_taker"],
+  created_date: 1700000000000,
+  updated_date: 1700000000000,
+};
+
+export const mockTwapOrder = {
+  id: "twap-order-123",
+  client_order_id: "twap-order-123",
+  symbol: "BTC/USD",
+  side: "buy",
+  type: "twap",
+  quantity: "0.1",
+  filled_quantity: "0.01",
+  leaves_quantity: "0.09",
+  amount: "6000",
+  filled_amount: "600",
+  price: "0",
+  status: "partially_filled",
+  time_in_force: "gtc",
+  execution_instructions: [],
+  twap: {
+    type: "market",
+    period: 300,
+    frequency: 30,
+    total_slices: 10,
+    completed_slices: 1,
+    start_date: 1783067249312,
+    end_date: 1783067549312,
+  },
+  created_date: 1783067249312,
+  updated_date: 1783067279312,
+};
+
+export const mockOrderBookLevel = {
+  aid: "BTC",
+  anm: "Bitcoin",
+  s: "SELL" as const,
+  p: "95100",
+  pc: "USD",
+  pn: "MONE",
+  q: "1",
+  qc: "BTC",
+  qn: "UNIT",
+  ve: "REVX",
+  no: "2",
+  ts: "CLOB",
+  pdt: 1700000000000,
+};
+
+export const mockTrade = {
+  tid: "12345678123412341234123456789abc",
+  aid: "BTC",
+  anm: "Bitcoin",
+  p: "95000",
+  pc: "USD",
+  pn: "MONE",
+  q: "0.001",
+  qc: "BTC",
+  qn: "UNIT",
+  ve: "REVX",
+  pdt: 1700000000000,
+  vp: "REVX",
+  tdt: 1700000000000,
+  oid: "d0184248-2de5-4b2a-9fe2-0cf42670da47",
+  s: "buy" as const,
+  im: false,
+};
+
+export const mockTransaction = {
+  id: "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+  status: "completed",
+  type: "buy",
+  source: {
+    amount: "1000.00",
+    currency: "USD",
+  },
+  destination: {
+    amount: "0.01",
+    currency: "BTC",
+  },
+  created_date: 1700000000000,
+  processed_date: 1700000001000,
+};
