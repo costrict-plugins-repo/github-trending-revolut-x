@@ -1,0 +1,138 @@
+import { createRequire } from "node:module";
+import { Command } from "commander";
+import { registerConfigureCommand } from "./commands/configure.js";
+import { registerAccountCommand } from "./commands/account.js";
+import { registerMarketCommand } from "./commands/market.js";
+import { registerOrderCommand } from "./commands/order.js";
+import { registerTradeCommand } from "./commands/trade.js";
+import { registerTransactionCommand } from "./commands/transaction.js";
+import { registerMonitorCommand } from "./commands/monitor.js";
+import { registerStrategyCommand } from "./commands/strategy.js";
+import { registerConnectorCommand } from "./commands/connector.js";
+
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json") as { version: string };
+
+export function createProgram(): Command {
+  const program = new Command();
+
+  program
+    .name("revx")
+    .description("Revolut X Exchange CLI")
+    .version(version)
+    .showHelpAfterError("(run with --help to see the available options)")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  Setup:
+    $ revx configure                                      Set up API key and private key
+    $ revx configure get                                  Show current configuration
+    $ revx configure set --api-key <key>                  Set the API key non-interactively
+    $ revx configure generate-keypair                     Generate an Ed25519 keypair
+    $ revx configure path                                 Print the config directory
+
+  Account:
+    $ revx account balances                               Show non-zero balances
+    $ revx account balances BTC                           Get BTC balance
+    $ revx account balances --currencies BTC,ETH,USD      Filter by currencies
+    $ revx account balances --all                         Include zero balances
+    $ revx account balances --json                        Output as JSON
+    $ revx account sub-accounts                           Sub-account totals in USD
+    $ revx account sub-accounts --convert-to EUR          Sub-account totals in EUR
+
+  Market:
+    $ revx market currencies                              List supported currencies
+    $ revx market currencies fiat                         Filter fiat only currencies
+    $ revx market currencies crypto                       Filter crypto only currencies
+    $ revx market pairs                                   List all trading pairs
+    $ revx market pairs --filter BTC-USD,ETH-USD          Filter by pairs
+    $ revx market tickers                                 List all tickers
+    $ revx market tickers --symbols BTC-USD,ETH-USD       Filter tickers by pair
+    $ revx market ticker BTC-USD                          Get BTC-USD ticker
+    $ revx market candles BTC-USD                         Get hourly candles
+    $ revx market candles BTC-USD --interval 5m           Get 5-minute candles
+    $ revx market candles BTC-USD --since 7d --until today
+    $ revx market orderbook BTC-USD                       Get order book (top 50)
+    $ revx market orderbook BTC-USD --limit 20            Get order book (top 20)
+    $ revx market fees                                    Show fee tiers by trading volume
+
+  Orders:
+    $ revx order place BTC-USD buy --qty 0.001 --market         Place market buy (base qty)
+    $ revx order place BTC-USD buy --quote 100 --market         Place market buy (quote amount)
+    $ revx order place BTC-USD sell --qty 0.001 --limit 95000   Place limit sell
+    $ revx order place BTC-USD buy --qty 0.001 --limit 95000 --post-only
+    $ revx order place BTC-USD buy --qty 0.001 --limit 95000 --time-in-force ioc
+    $ revx order open                                     List active orders
+    $ revx order open --symbols BTC-USD --side buy        Filter active orders
+    $ revx order history --symbols BTC-USD                Order history for pair
+    $ revx order get <order-id>                           Get order details
+    $ revx order fills <order-id>                         Get order fills
+    $ revx order cancel <order-id>                        Cancel an order
+    $ revx order cancel --all                             Cancel all open orders
+    $ revx order replace <order-id> --price 96000         Replace order limit price
+    $ revx order replace <order-id> --qty 0.002           Replace order qty (amount recalculated)
+    $ revx order replace <order-id> --time-in-force ioc   Replace order time in force
+    $ revx order replace <order-id> --allow-taker         Allow taker on an existing order
+
+  Trades:
+    $ revx trade private BTC-USD                          Private trade history
+    $ revx trade private BTC-USD --limit 100 --start-date 7d
+    $ revx trade public BTC-USD                           All public trades
+    $ revx trade public BTC-USD --start-date 7d --limit 200
+    $ revx trade volume                                   Your trading volume (last 30 days)
+    $ revx trade volume --interval-days 7                 Trading volume over 7 days
+
+  Transactions:
+    $ revx transaction list                               Recent transactions
+    $ revx transaction list --start-date 7d               Last 7 days
+    $ revx transaction list --types buy,receive           Filter by type
+    $ revx transaction list --statuses completed          Filter by status
+    $ revx transaction list --currencies BTC,USD          Filter by currency
+    $ revx transaction list --limit 100 --json             Last 100 as JSON
+    $ revx transaction get <transaction-id>               Full details of one transaction
+
+  Monitor (runs in foreground, Ctrl-C to stop):
+    $ revx monitor price BTC-USD --direction above --threshold 100000
+    $ revx monitor rsi ETH-USD --direction above --threshold 70 --period 14
+    $ revx monitor ema-cross BTC-USD --direction bullish
+    $ revx monitor macd BTC-USD --direction bullish --fast 12 --slow 26 --signal 9
+    $ revx monitor bollinger BTC-USD --band upper
+    $ revx monitor volume-spike BTC-USD --multiplier 3.0
+    $ revx monitor spread BTC-USD --direction above --threshold 0.5
+    $ revx monitor obi BTC-USD --direction above --threshold 0.3
+    $ revx monitor price-change BTC-USD --direction rise --threshold 5.0 --lookback 24
+    $ revx monitor atr-breakout BTC-USD --period 14 --multiplier 1.5
+    $ revx monitor types                                  List all monitor types
+
+  Strategy:
+    $ revx strategy grid backtest BTC-USD --levels 10 --range 10 --investment 1000
+    $ revx strategy grid optimize BTC-USD --investment 1000 --days 30 --interval 1h
+    $ revx strategy grid run BTC-USD --investment 500 --levels 10 --range 5
+    $ revx strategy grid run BTC-USD --investment 500 --dry-run
+
+  Connector (Telegram notifications):
+    $ revx connector telegram add --token <token> --chat-id <id>
+    $ revx connector telegram add --token <token> --chat-id <id> --test
+    $ revx connector telegram list
+    $ revx connector telegram test <id>
+    $ revx connector telegram enable <id>
+    $ revx connector telegram disable <id>
+    $ revx connector telegram delete <id>
+
+These examples are a curated subset. Run 'revx <command> --help' (e.g.
+'revx order place --help') for the complete list of arguments and flags.`,
+    );
+
+  registerConfigureCommand(program, version);
+  registerAccountCommand(program);
+  registerMarketCommand(program);
+  registerOrderCommand(program);
+  registerTradeCommand(program);
+  registerTransactionCommand(program);
+  registerMonitorCommand(program);
+  registerStrategyCommand(program);
+  registerConnectorCommand(program);
+
+  return program;
+}

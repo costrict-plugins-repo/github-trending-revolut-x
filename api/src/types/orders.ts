@@ -1,0 +1,213 @@
+export type OrderSide = "buy" | "sell";
+export type OrderType = "market" | "limit" | "conditional" | "tpsl" | "twap";
+export type OrderStatus =
+  | "pending_new"
+  | "new"
+  | "partially_filled"
+  | "filled"
+  | "cancelled"
+  | "rejected"
+  | "replaced";
+export type ActiveOrderState = "pending_new" | "new" | "partially_filled";
+export type HistoricalOrderState =
+  | "filled"
+  | "cancelled"
+  | "rejected"
+  | "replaced"
+  | "partially_filled";
+export type ActiveOrderType = "limit" | "conditional" | "tpsl" | "twap";
+export type HistoricalOrderType =
+  | "market"
+  | "limit"
+  | "conditional"
+  | "tpsl"
+  | "twap";
+export type TimeInForce = "gtc" | "ioc" | "fok";
+export type PlaceTimeInForce = "gtc" | "ioc";
+export type ExecutionInstruction = "allow_taker" | "post_only";
+export type TriggerDirection = "ge" | "le";
+
+export interface OrderTrigger {
+  trigger_price: string;
+  type: "market" | "limit";
+  trigger_direction: TriggerDirection;
+  limit_price?: string;
+  time_in_force: "gtc" | "ioc";
+  execution_instructions: ExecutionInstruction[];
+}
+
+export type TriggerReason =
+  | "conditional"
+  | "take_profit"
+  | "stop_loss"
+  | "twap";
+
+export interface TwapTriggeredBy {
+  parent_id: string;
+  slice_index: number;
+}
+
+export interface TriggeredBy {
+  conditional?: OrderTrigger;
+  take_profit?: OrderTrigger;
+  stop_loss?: OrderTrigger;
+  twap?: TwapTriggeredBy;
+  reason: TriggerReason;
+}
+
+export interface OnFill {
+  take_profit?: OrderTrigger;
+  stop_loss?: OrderTrigger;
+  id?: string;
+}
+
+export interface TwapOrderDetails {
+  type: "market" | "limit";
+  price?: string;
+  period: number;
+  frequency: number;
+  total_slices: number;
+  completed_slices: number;
+  start_date: number;
+  end_date: number;
+  linked_ids?: string[];
+}
+
+export interface Order {
+  id: string;
+  previous_order_id?: string;
+  client_order_id: string;
+  symbol: string;
+  side: OrderSide;
+  type: OrderType;
+  quantity?: string;
+  filled_quantity: string;
+  filled_amount?: string;
+  leaves_quantity?: string;
+  amount?: string;
+  price: string;
+  average_fill_price?: string;
+  status: OrderStatus;
+  reject_reason?: string;
+  time_in_force: TimeInForce;
+  execution_instructions: ExecutionInstruction[];
+  conditional?: OrderTrigger;
+  take_profit?: OrderTrigger;
+  stop_loss?: OrderTrigger;
+  twap?: TwapOrderDetails;
+  created_date: number;
+  updated_date: number;
+}
+
+export interface OrderDetails {
+  id: string;
+  previous_order_id?: string;
+  client_order_id: string;
+  symbol: string;
+  side: OrderSide;
+  type: OrderType;
+  quantity?: string;
+  filled_quantity: string;
+  filled_amount?: string;
+  leaves_quantity?: string;
+  amount?: string;
+  price: string;
+  average_fill_price?: string;
+  total_fee?: string;
+  fee_currency?: string;
+  status: OrderStatus;
+  reject_reason?: string;
+  time_in_force: TimeInForce;
+  execution_instructions: ExecutionInstruction[];
+  conditional?: OrderTrigger;
+  take_profit?: OrderTrigger;
+  stop_loss?: OrderTrigger;
+  twap?: TwapOrderDetails;
+  triggered_by?: TriggeredBy;
+  on_fill?: OnFill;
+  created_date: number;
+  updated_date: number;
+}
+
+export interface OrderPlacementResult {
+  venue_order_id: string;
+  client_order_id: string;
+  state: OrderStatus;
+}
+
+export interface LimitOrderConfig {
+  price: string;
+  baseSize?: string;
+  quoteSize?: string;
+  timeInForce?: PlaceTimeInForce;
+  executionInstructions?: ExecutionInstruction[];
+}
+
+export interface MarketOrderConfig {
+  baseSize?: string;
+  quoteSize?: string;
+}
+
+export interface ConditionalOrderConfig {
+  triggerPrice: string;
+  limitPrice?: string;
+  baseSize?: string;
+  quoteSize?: string;
+}
+
+export interface TpslLegConfig {
+  triggerPrice: string;
+  limitPrice?: string;
+}
+
+export interface TpslOrderConfig {
+  baseSize: string;
+  takeProfit?: TpslLegConfig;
+  stopLoss?: TpslLegConfig;
+}
+
+export interface PlaceOrderParams {
+  symbol: string;
+  side: OrderSide;
+  limit?: LimitOrderConfig;
+  market?: MarketOrderConfig;
+  conditional?: ConditionalOrderConfig;
+  tpsl?: TpslOrderConfig;
+  clientOrderId?: string;
+}
+
+export interface ReplaceTriggerConfig {
+  triggerPrice: string;
+  limitPrice?: string;
+}
+
+export interface ReplaceOrderParams {
+  clientOrderId: string;
+  price?: string;
+  baseSize?: string;
+  quoteSize?: string;
+  timeInForce?: PlaceTimeInForce;
+  executionInstructions?: ExecutionInstruction[];
+  conditional?: ReplaceTriggerConfig | null;
+  takeProfit?: ReplaceTriggerConfig | null;
+  stopLoss?: ReplaceTriggerConfig | null;
+}
+
+export interface ActiveOrdersOptions {
+  symbols?: string[];
+  orderStates?: ActiveOrderState[];
+  orderTypes?: ActiveOrderType[];
+  side?: OrderSide;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface HistoricalOrdersOptions {
+  symbols?: string[];
+  orderStates?: HistoricalOrderState[];
+  orderTypes?: HistoricalOrderType[];
+  startDate?: number;
+  endDate?: number;
+  cursor?: string;
+  limit?: number;
+}
